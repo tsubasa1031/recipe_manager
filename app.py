@@ -2,14 +2,13 @@ import streamlit as st
 import json
 import os
 import pandas as pd
-from datetime import datetime
 import uuid
 from github import Github, GithubException
 
 # --- 設定 ---
 DATA_FILE = 'recipe_data.json'
 
-# --- 今回指定されたカテゴリ一覧 ---
+# --- カテゴリ一覧 ---
 DEFAULT_FOLDERS = [
     "未分類",
     "和食", "洋食", "フレンチ", "イタリアン",
@@ -28,11 +27,9 @@ class RecipeManager:
             try:
                 with open(self.filename, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    
-                    # データのマイグレーション（古い形式のデータを新しい形式に変換）
                     self._migrate_data(data)
                     
-                    # ★カテゴリの自動更新
+                    # カテゴリの自動更新
                     current_folders = data.get("folders", [])
                     for folder in DEFAULT_FOLDERS:
                         if folder not in current_folders:
@@ -43,7 +40,7 @@ class RecipeManager:
             except json.JSONDecodeError:
                 pass 
 
-        # 初期データ構造（ファイルがない場合）
+        # 初期データ構造
         return {
             "folders": DEFAULT_FOLDERS,
             "recipes": []
@@ -52,18 +49,14 @@ class RecipeManager:
     def _migrate_data(self, data):
         """古い形式のデータを修正する"""
         for recipe in data.get("recipes", []):
-            # 作り方が文字列(旧形式)なら、リスト形式(新形式)に変換
             if isinstance(recipe.get("steps"), str):
                 lines = recipe["steps"].split('\n')
                 recipe["steps"] = [{"手順": line.strip()} for line in lines if line.strip()]
             
-            # 食材リストの移行 (文字列 -> リスト[辞書])
             if isinstance(recipe.get("ingredients"), str):
                 lines = recipe.get("ingredients", "").split('\n')
-                # 旧データは分量が不明なので空文字にする
                 recipe["ingredients"] = [{"食材": line.strip(), "分量": ""} for line in lines if line.strip()]
 
-            # 調味料リストの移行 (文字列 -> リスト[辞書])
             if isinstance(recipe.get("seasonings"), str):
                 lines = recipe.get("seasonings", "").split('\n')
                 recipe["seasonings"] = [{"調味料": line.strip(), "分量": ""} for line in lines if line.strip()]
@@ -93,7 +86,7 @@ class RecipeManager:
                 contents = repo.get_contents(remote_file_path, ref=branch)
                 repo.update_file(
                     path=contents.path,
-                    message=f"Update recipe data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    message=f"Update recipe data",
                     content=content,
                     sha=contents.sha,
                     branch=branch
@@ -102,7 +95,7 @@ class RecipeManager:
                 if e.status == 404:
                     repo.create_file(
                         path=remote_file_path,
-                        message=f"Create recipe data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        message=f"Create recipe data",
                         content=content,
                         branch=branch
                     )
@@ -130,7 +123,7 @@ class RecipeManager:
             "ingredients": ingredients_list,
             "seasonings": seasonings_list,
             "steps": steps_list,
-            "created_at": datetime.now().strftime("%Y-%m-%d"),
+            # created_at は削除しました
             "logs": []
         }
         self.data["recipes"].append(new_recipe)
@@ -139,8 +132,9 @@ class RecipeManager:
     def add_log(self, recipe_id, log_text):
         for recipe in self.data["recipes"]:
             if recipe["id"] == recipe_id:
+                # ログの日付も不要であればここを修正しますが、ログには日付があった方が便利なので残しています
                 log_entry = {
-                    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
                     "text": log_text
                 }
                 recipe["logs"].insert(0, log_entry)
@@ -180,17 +174,13 @@ def main():
     if menu == "レシピ一覧・検索":
         st.header("📖 レシピを探す")
 
-        # --- 検索フィルター ---
         col_search1, col_search2 = st.columns([1, 2])
         with col_search1:
-            # フォルダフィルタ
             folder_options = ["すべて"] + manager.data["folders"]
             selected_folder = st.selectbox("📂 フォルダ", folder_options)
         with col_search2:
-            # 食材検索
             search_query = st.text_input("🔍 食材・料理名で検索", placeholder="例: 豚肉, カレー")
 
-        # フィルタリング
         filtered_recipes = []
         for r in manager.data["recipes"]:
             is_folder_match = (selected_folder == "すべて") or (r["folder"] == selected_folder)
@@ -200,7 +190,6 @@ def main():
                 query = search_query.lower()
                 in_title = query in r["title"].lower()
                 
-                # 食材リストから文字列を抽出して検索
                 ing_data = r.get("ingredients", [])
                 ing_text = ""
                 if isinstance(ing_data, list):
@@ -214,12 +203,15 @@ def main():
             if is_folder_match and is_word_match:
                 filtered_recipes.append(r)
 
-        # --- 一覧表示 ---
         if not filtered_recipes:
             st.info("条件に合うレシピが見つかりません。")
         else:
-            df_display = pd.DataFrame(filtered_recipes)[["title", "folder", "created_at"]]
-            df_display.columns = ["料理名", "カテゴリ", "登録日"]
+            # 登録日を除外して表示
+            df_display = pd.DataFrame(filtered_recipes)
+            # データが存在する場合のみカラム抽出
+            if not df_display.empty:
+                df_display = df_display[["title", "folder"]]
+                df_display.columns = ["料理名", "カテゴリ"]
             
             st.write("▼ レシピを選択して詳細を表示")
             
@@ -237,7 +229,8 @@ def main():
 
                 st.markdown("---")
                 st.subheader(f"🍳 {recipe['title']}")
-                st.caption(f"カテゴリ: {recipe['folder']} | 登録日: {recipe.get('created_at', '-')}")
+                # 登録日表示を削除
+                st.caption(f"カテゴリ: {recipe['folder']}")
 
                 col1, col2 = st.columns([1, 1.2])
                 
@@ -309,23 +302,33 @@ def main():
             # --- 食材入力 ---
             with col1:
                 st.markdown("### 🥕 食材リスト")
-                default_ingredients = pd.DataFrame([{"食材": "", "分量": ""}])
+                st.caption("※入力後はTabキーで分量へ移動")
+                default_ingredients = pd.DataFrame([{"食材": "", "分量": ""}], columns=["食材", "分量"])
                 edited_ingredients = st.data_editor(
                     default_ingredients,
                     num_rows="dynamic",
                     use_container_width=True,
-                    key="editor_ingredients"
+                    key="editor_ingredients",
+                    column_config={
+                        "食材": st.column_config.TextColumn("食材", width="medium", required=True),
+                        "分量": st.column_config.TextColumn("分量", width="small")
+                    }
                 )
 
             # --- 調味料入力 ---
             with col2:
                 st.markdown("### 🧂 調味料リスト")
-                default_seasonings = pd.DataFrame([{"調味料": "", "分量": ""}])
+                st.caption("※入力後はTabキーで分量へ移動")
+                default_seasonings = pd.DataFrame([{"調味料": "", "分量": ""}], columns=["調味料", "分量"])
                 edited_seasonings = st.data_editor(
                     default_seasonings,
                     num_rows="dynamic",
                     use_container_width=True,
-                    key="editor_seasonings"
+                    key="editor_seasonings",
+                    column_config={
+                        "調味料": st.column_config.TextColumn("調味料", width="medium", required=True),
+                        "分量": st.column_config.TextColumn("分量", width="small")
+                    }
                 )
             
             st.markdown("### 🔥 作り方")
@@ -344,10 +347,22 @@ def main():
             
             if submitted:
                 if title:
-                    # 空行の除去処理
-                    clean_ingredients = edited_ingredients[edited_ingredients["食材"].str.strip() != ""]
-                    clean_seasonings = edited_seasonings[edited_seasonings["調味料"].str.strip() != ""]
-                    clean_steps = edited_steps[edited_steps["手順"].str.strip() != ""]
+                    # --- データクリーニング処理 ---
+                    # 1. null(NaN)を除外
+                    # 2. 空文字("")を除外
+                    
+                    # 食材
+                    clean_ingredients = edited_ingredients[
+                        edited_ingredients["食材"].notna() & (edited_ingredients["食材"] != "")
+                    ]
+                    # 調味料
+                    clean_seasonings = edited_seasonings[
+                        edited_seasonings["調味料"].notna() & (edited_seasonings["調味料"] != "")
+                    ]
+                    # 手順
+                    clean_steps = edited_steps[
+                        edited_steps["手順"].notna() & (edited_steps["手順"] != "")
+                    ]
                     
                     if clean_steps.empty:
                          st.error("作り方を1つ以上入力してください。")
