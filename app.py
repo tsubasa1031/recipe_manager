@@ -6,11 +6,11 @@ import uuid
 from github import Github, GithubException
 
 # --- 設定 ---
-# 保存するデータファイル名
-DATA_FILE = 'manga_data.json'
+# 保存するデータファイル名（レシピ専用）
+DATA_FILE = 'recipe_data.json'
 
 # --- データ管理クラス ---
-class MangaManager:
+class RecipeManager:
     def __init__(self, filename):
         self.filename = filename
         self.data = self._load_data()
@@ -24,10 +24,11 @@ class MangaManager:
             except json.JSONDecodeError:
                 pass 
 
-        # 初期データ構造（漫画用）
+        # 初期データ構造（レシピ用）
+        # ユーザーの要望に合わせてカテゴリを初期設定
         return {
-            "folders": ["未分類", "連載中", "完結済み", "購入予定", "少年漫画", "少女漫画"],
-            "mangas": []
+            "folders": ["未分類", "和食", "洋食", "中華", "パスタ", "スイーツ"],
+            "recipes": []
         }
 
     def save_data(self):
@@ -58,7 +59,7 @@ class MangaManager:
                 contents = repo.get_contents(remote_file_path, ref=branch)
                 repo.update_file(
                     path=contents.path,
-                    message=f"Update manga data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    message=f"Update recipe data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                     content=content,
                     sha=contents.sha,
                     branch=branch
@@ -68,11 +69,11 @@ class MangaManager:
                     # 作成 (Create)
                     repo.create_file(
                         path=remote_file_path,
-                        message=f"Create manga data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        message=f"Create recipe data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                         content=content,
                         branch=branch
                     )
-                    st.toast("GitHubに新規保存しました", icon="📚")
+                    st.toast("GitHubに新規保存しました", icon="🍳")
         except Exception as e:
             st.warning(f"GitHub同期エラー（ローカルには保存されています）: {e}")
 
@@ -83,181 +84,175 @@ class MangaManager:
             return True
         return False
 
-    def add_manga(self, title, folder, author, volumes, status, memo):
-        new_manga = {
+    def add_recipe(self, title, folder, ingredients, seasonings, steps):
+        new_recipe = {
             "id": str(uuid.uuid4()),
             "title": title,
             "folder": folder,
-            "author": author,
-            "volumes": volumes,  # 所持巻数など
-            "status": status,    # 連載状況など
-            "memo": memo,        # あらすじやメモ
-            "logs": []           # 読書ログ・購入履歴
+            "ingredients": ingredients,
+            "seasonings": seasonings,
+            "steps": steps,
+            "logs": []  # 試行錯誤の記録用リスト
         }
-        self.data["mangas"].append(new_manga)
+        self.data["recipes"].append(new_recipe)
         self.save_data()
 
-    def add_log(self, manga_id, log_text):
-        for manga in self.data["mangas"]:
-            if manga["id"] == manga_id:
+    def add_log(self, recipe_id, log_text):
+        for recipe in self.data["recipes"]:
+            if recipe["id"] == recipe_id:
                 log_entry = {
                     "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "text": log_text
                 }
-                manga["logs"].insert(0, log_entry)
+                recipe["logs"].insert(0, log_entry)  # 新しいものを上に
                 self.save_data()
                 return True
         return False
 
-    def get_mangas_by_folder(self, folder_name):
+    def get_recipes_by_folder(self, folder_name):
         if folder_name == "すべて":
-            return self.data["mangas"]
-        return [m for m in self.data["mangas"] if m["folder"] == folder_name]
+            return self.data["recipes"]
+        return [r for r in self.data["recipes"] if r["folder"] == folder_name]
 
-    def delete_manga(self, manga_id):
-        self.data["mangas"] = [m for m in self.data["mangas"] if m["id"] != manga_id]
+    def delete_recipe(self, recipe_id):
+        self.data["recipes"] = [r for r in self.data["recipes"] if r["id"] != recipe_id]
         self.save_data()
-
-    def update_manga_volumes(self, manga_id, new_volumes):
-        """巻数情報を更新するヘルパー"""
-        for manga in self.data["mangas"]:
-            if manga["id"] == manga_id:
-                manga["volumes"] = new_volumes
-                self.save_data()
-                return True
-        return False
 
 # --- アプリケーション本体 ---
 def main():
-    st.set_page_config(page_title="Manga Manager", layout="wide", page_icon="📚")
+    st.set_page_config(page_title="My Cooking Lab", layout="wide", page_icon="🍳")
     
     st.markdown("""
     <style>
     .log-box {
-        background-color: #f0f2f6;
+        background-color: #fff5f5;
         padding: 10px;
         border-radius: 5px;
         margin-bottom: 8px;
-        border-left: 5px solid #4CAF50;
+        border-left: 5px solid #ff6b6b;
     }
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("📚 私の漫画管理棚")
+    st.title("🍳 My Cooking Lab (料理研究ノート)")
     
-    manager = MangaManager(DATA_FILE)
+    manager = RecipeManager(DATA_FILE)
 
-    menu = st.sidebar.radio("メニュー", ["本棚を見る (一覧)", "新しく登録する", "フォルダ(本棚)管理"])
+    menu = st.sidebar.radio("メニュー", ["レシピを見る・研究する", "新しいレシピを登録", "フォルダ管理"])
 
     # ---------------------------------------------------------
-    # 1. 本棚を見る
+    # 1. レシピを見る・研究する
     # ---------------------------------------------------------
-    if menu == "本棚を見る (一覧)":
-        st.header("📖 登録済み漫画リスト")
+    if menu == "レシピを見る・研究する":
+        st.header("📖 レシピ一覧")
 
         # フォルダフィルタ
         folder_options = ["すべて"] + manager.data["folders"]
         selected_folder = st.selectbox("📂 カテゴリで絞り込み", folder_options)
 
-        mangas = manager.get_mangas_by_folder(selected_folder)
+        recipes = manager.get_recipes_by_folder(selected_folder)
 
-        if not mangas:
-            st.info("まだ登録がありません。「新しく登録する」から追加してください。")
+        if not recipes:
+            st.info("レシピがまだありません。「新しいレシピを登録」から追加してください。")
         
-        for manga in mangas:
-            # エクスパンダーのラベル作成
-            label = f"【{manga['folder']}】 {manga['title']} （{manga['volumes']}）"
-            
-            with st.expander(label):
+        for recipe in recipes:
+            with st.expander(f"【{recipe['folder']}】 {recipe['title']}"):
                 col1, col2 = st.columns([1, 1])
                 
                 with col1:
-                    st.markdown(f"**👤 作者:** {manga['author']}")
-                    st.markdown(f"**🏷️ ステータス:** {manga['status']}")
-                    
-                    # 巻数クイック更新
-                    new_vol = st.text_input("所持巻数を更新", value=manga['volumes'], key=f"vol_{manga['id']}")
-                    if new_vol != manga['volumes']:
-                        manager.update_manga_volumes(manga['id'], new_vol)
-                        st.toast(f"{manga['title']}の巻数を更新しました")
-                        st.rerun()
-
+                    st.subheader("🥕 食材")
+                    st.text(recipe['ingredients'])
+                    st.subheader("🧂 調味料")
+                    st.text(recipe['seasonings'])
+                
                 with col2:
-                    st.markdown("**📝 メモ・あらすじ:**")
-                    st.info(manga['memo'] if manga['memo'] else "メモなし")
+                    st.subheader("🔥 作り方")
+                    st.text(recipe['steps'])
 
                 st.markdown("---")
                 
-                # --- 読書・購入ログ ---
-                st.subheader("🔖 読書・購入ログ")
+                # --- 試行錯誤ログセクション ---
+                st.subheader("📝 試行錯誤・気づきの記録 (PDCA)")
                 
-                with st.form(key=f"log_form_{manga['id']}"):
+                with st.form(key=f"log_form_{recipe['id']}"):
                     col_log, col_btn = st.columns([3, 1])
                     with col_log:
-                        new_log = st.text_input("ログを追加 (例: 12巻購入, アニメ化決定！)", key=f"input_{manga['id']}")
+                        new_log = st.text_input("今回の気づきを入力 (例: 塩少なめでOK, 焼き時間+1分)", key=f"input_{recipe['id']}")
                     with col_btn:
-                        submit_log = st.form_submit_button("記録")
+                        submit_log = st.form_submit_button("記録を追加")
                     
                     if submit_log and new_log:
-                        manager.add_log(manga['id'], new_log)
-                        st.success("記録しました")
+                        manager.add_log(recipe['id'], new_log)
+                        st.success("記録を保存しました！")
                         st.rerun()
 
-                if manga['logs']:
-                    for log in manga['logs']:
+                # 過去のログ表示
+                if recipe['logs']:
+                    st.write("▼ 過去の記録")
+                    for log in recipe['logs']:
                         st.markdown(f"""
                         <div class="log-box">
-                            <small>{log['date']}</small> : {log['text']}
+                            <small>{log['date']}</small><br>
+                            {log['text']}
                         </div>
                         """, unsafe_allow_html=True)
+                else:
+                    st.caption("まだ記録はありません。")
 
-                if st.button("🗑️ この漫画を削除", key=f"del_{manga['id']}"):
-                    manager.delete_manga(manga['id'])
+                # 削除ボタン
+                if st.button("🗑️ このレシピを削除", key=f"del_{recipe['id']}"):
+                    manager.delete_recipe(recipe['id'])
                     st.rerun()
 
     # ---------------------------------------------------------
-    # 2. 新しく登録する
+    # 2. 新しいレシピを登録
     # ---------------------------------------------------------
-    elif menu == "新しく登録する":
-        st.header("✍️ 新規漫画登録")
+    elif menu == "新しいレシピを登録":
+        st.header("✍️ 新規レシピ登録")
         
-        with st.form("add_manga_form"):
+        with st.form("add_recipe_form"):
+            col_basic1, col_basic2 = st.columns([2, 1])
+            with col_basic1:
+                title = st.text_input("料理名 (必須)")
+            with col_basic2:
+                folder = st.selectbox("フォルダ", manager.data["folders"])
+
             col1, col2 = st.columns(2)
             with col1:
-                title = st.text_input("タイトル (必須)")
-                author = st.text_input("作者")
+                ingredients = st.text_area("食材リスト", height=150, placeholder="例：\n豚バラ肉 200g\nキャベツ 1/4個")
             with col2:
-                folder = st.selectbox("カテゴリ(フォルダ)", manager.data["folders"])
-                status = st.selectbox("ステータス", ["連載中", "完結", "休載中", "未購入"])
-
-            volumes = st.text_input("所持巻数 (例: 1-15巻, 全巻)", placeholder="1-5巻")
-            memo = st.text_area("メモ・あらすじ・備考", height=100)
+                seasonings = st.text_area("調味料リスト", height=150, placeholder="例：\n醤油 大さじ1\nみりん 大さじ1")
             
-            submitted = st.form_submit_button("登録する")
+            steps = st.text_area("作り方", height=200, placeholder="手順を記述してください")
+            
+            submitted = st.form_submit_button("レシピを保存する")
             
             if submitted:
                 if title:
-                    manager.add_manga(title, folder, author, volumes, status, memo)
-                    st.success(f"「{title}」を本棚に追加しました！")
+                    manager.add_recipe(title, folder, ingredients, seasonings, steps)
+                    st.success(f"「{title}」を保存しました！")
                 else:
-                    st.error("タイトルは必須です。")
+                    st.error("料理名は必須です。")
 
     # ---------------------------------------------------------
     # 3. フォルダ管理
     # ---------------------------------------------------------
-    elif menu == "フォルダ(本棚)管理":
-        st.header("📂 カテゴリ管理")
-        st.write("現在のカテゴリ一覧:")
+    elif menu == "フォルダ管理":
+        st.header("📂 フォルダ(カテゴリ)の管理")
+        
+        st.write("現在のフォルダ一覧:")
         st.write(manager.data["folders"])
         
-        with st.form("add_folder"):
-            new_folder = st.text_input("新しいカテゴリ名 (例: 電子書籍, ジャンプ作品)")
-            if st.form_submit_button("追加"):
-                if manager.add_folder(new_folder):
-                    st.success(f"「{new_folder}」を追加しました。")
+        with st.form("add_folder_form"):
+            new_folder_name = st.text_input("新しいフォルダ名")
+            submitted = st.form_submit_button("追加")
+            
+            if submitted:
+                if manager.add_folder(new_folder_name):
+                    st.success(f"フォルダ「{new_folder_name}」を追加しました。")
                     st.rerun()
                 else:
-                    st.warning("既にあるか、無効な名前です。")
+                    st.warning("そのフォルダは既に存在するか、名前が無効です。")
 
 if __name__ == "__main__":
     main()
