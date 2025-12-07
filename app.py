@@ -1,12 +1,12 @@
 import streamlit as st
 import json
 import os
+import pandas as pd
 from datetime import datetime
 import uuid
 from github import Github, GithubException
 
 # --- 設定 ---
-# 保存するデータファイル名（レシピ専用）
 DATA_FILE = 'recipe_data.json'
 
 # --- データ管理クラス ---
@@ -20,16 +20,36 @@ class RecipeManager:
         if os.path.exists(self.filename):
             try:
                 with open(self.filename, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    # データのマイグレーション（古い形式のデータを新しい形式に変換）
+                    self._migrate_data(data)
+                    return data
             except json.JSONDecodeError:
                 pass 
 
-        # 初期データ構造（レシピ用）
-        # ユーザーの要望に合わせてカテゴリを初期設定
+        # 初期データ構造
+        # フォルダ区分を細分化
         return {
-            "folders": ["未分類", "和食", "洋食", "中華", "パスタ", "スイーツ"],
+            "folders": [
+                "未分類", 
+                "主菜（肉）", "主菜（魚）", "主菜（他）",
+                "副菜・サラダ", "汁物・スープ", 
+                "ご飯もの・丼", "麺類（パスタ等）", 
+                "パン・粉もの", 
+                "スイーツ・お菓子", "おつまみ", "イベント・おもてなし"
+            ],
             "recipes": []
         }
+
+    def _migrate_data(self, data):
+        """古い形式のデータを修正する"""
+        for recipe in data.get("recipes", []):
+            # 作り方が文字列(旧形式)なら、リスト形式(新形式)に変換
+            if isinstance(recipe.get("steps"), str):
+                # 改行で分割してリスト化
+                lines = recipe["steps"].split('\n')
+                # データエディタ用の辞書リストに変換
+                recipe["steps"] = [{"手順": line.strip()} for line in lines if line.strip()]
 
     def save_data(self):
         # 1. ローカル保存
@@ -37,12 +57,11 @@ class RecipeManager:
         with open(self.filename, 'w', encoding='utf-8') as f:
             f.write(json_str)
         
-        # 2. GitHubへ同期 (secrets.tomlの設定を使用)
+        # 2. GitHubへ同期
         if "github" in st.secrets:
             self._sync_to_github(json_str)
 
     def _sync_to_github(self, content):
-        """GitHub上のファイルを更新、または作成する"""
         try:
             gh_config = st.secrets["github"]
             token = gh_config["token"]
@@ -51,11 +70,9 @@ class RecipeManager:
 
             g = Github(token)
             repo = g.get_repo(repo_name)
-            
             remote_file_path = self.filename
 
             try:
-                # 更新 (Update)
                 contents = repo.get_contents(remote_file_path, ref=branch)
                 repo.update_file(
                     path=contents.path,
@@ -66,14 +83,13 @@ class RecipeManager:
                 )
             except GithubException as e:
                 if e.status == 404:
-                    # 作成 (Create)
                     repo.create_file(
                         path=remote_file_path,
                         message=f"Create recipe data: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                         content=content,
                         branch=branch
                     )
-                    st.toast("GitHubに新規保存しました", icon="🍳")
+                    st.toast("GitHubに保存しました", icon="🍳")
         except Exception as e:
             st.warning(f"GitHub同期エラー（ローカルには保存されています）: {e}")
 
@@ -84,18 +100,30 @@ class RecipeManager:
             return True
         return False
 
-    def add_recipe(self, title, folder, ingredients, seasonings, steps):
+    def add_recipe(self, title, folder, ingredients, seasonings, steps_df):
+        # データフレームを辞書リストに変換して保存
+        steps_list = steps_df.to_dict('records')
+        
         new_recipe = {
             "id": str(uuid.uuid4()),
             "title": title,
             "folder": folder,
             "ingredients": ingredients,
             "seasonings": seasonings,
-            "steps": steps,
-            "logs": []  # 試行錯誤の記録用リスト
+            "steps": steps_list,
+            "created_at": datetime.now().strftime("%Y-%m-%d"),
+            "logs": []
         }
         self.data["recipes"].append(new_recipe)
         self.save_data()
+
+    def update_recipe_steps(self, recipe_id, steps_df):
+        for recipe in self.data["recipes"]:
+            if recipe["id"] == recipe_id:
+                recipe["steps"] = steps_df.to_dict('records')
+                self.save_data()
+                return True
+        return False
 
     def add_log(self, recipe_id, log_text):
         for recipe in self.data["recipes"]:
@@ -104,15 +132,10 @@ class RecipeManager:
                     "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "text": log_text
                 }
-                recipe["logs"].insert(0, log_entry)  # 新しいものを上に
+                recipe["logs"].insert(0, log_entry)
                 self.save_data()
                 return True
         return False
-
-    def get_recipes_by_folder(self, folder_name):
-        if folder_name == "すべて":
-            return self.data["recipes"]
-        return [r for r in self.data["recipes"] if r["folder"] == folder_name]
 
     def delete_recipe(self, recipe_id):
         self.data["recipes"] = [r for r in self.data["recipes"] if r["id"] != recipe_id]
@@ -131,83 +154,129 @@ def main():
         margin-bottom: 8px;
         border-left: 5px solid #ff6b6b;
     }
+    .stDataFrame { margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
     st.title("🍳 My Cooking Lab (料理研究ノート)")
     
     manager = RecipeManager(DATA_FILE)
-
-    menu = st.sidebar.radio("メニュー", ["レシピを見る・研究する", "新しいレシピを登録", "フォルダ管理"])
+    menu = st.sidebar.radio("メニュー", ["レシピ一覧・検索", "新規レシピ登録", "フォルダ管理"])
 
     # ---------------------------------------------------------
-    # 1. レシピを見る・研究する
+    # 1. レシピ一覧・検索
     # ---------------------------------------------------------
-    if menu == "レシピを見る・研究する":
-        st.header("📖 レシピ一覧")
+    if menu == "レシピ一覧・検索":
+        st.header("📖 レシピを探す")
 
-        # フォルダフィルタ
-        folder_options = ["すべて"] + manager.data["folders"]
-        selected_folder = st.selectbox("📂 カテゴリで絞り込み", folder_options)
+        # --- 検索フィルター ---
+        col_search1, col_search2 = st.columns([1, 2])
+        with col_search1:
+            # フォルダフィルタ
+            folder_options = ["すべて"] + manager.data["folders"]
+            selected_folder = st.selectbox("📂 フォルダ", folder_options)
+        with col_search2:
+            # 食材検索（キーワード）
+            search_query = st.text_input("🔍 食材・料理名で検索", placeholder="例: 豚肉, カレー")
 
-        recipes = manager.get_recipes_by_folder(selected_folder)
+        # フィルタリングロジック
+        filtered_recipes = []
+        for r in manager.data["recipes"]:
+            # フォルダ条件
+            is_folder_match = (selected_folder == "すべて") or (r["folder"] == selected_folder)
+            # 検索ワード条件（タイトル または 食材 に含まれるか）
+            is_word_match = True
+            if search_query:
+                query = search_query.lower()
+                in_title = query in r["title"].lower()
+                in_ingredients = query in r["ingredients"].lower()
+                is_word_match = in_title or in_ingredients
+            
+            if is_folder_match and is_word_match:
+                filtered_recipes.append(r)
 
-        if not recipes:
-            st.info("レシピがまだありません。「新しいレシピを登録」から追加してください。")
-        
-        for recipe in recipes:
-            with st.expander(f"【{recipe['folder']}】 {recipe['title']}"):
-                col1, col2 = st.columns([1, 1])
+        # --- 一覧表示（表形式） ---
+        if not filtered_recipes:
+            st.info("条件に合うレシピが見つかりません。")
+        else:
+            # 表示用のDataFrameを作成
+            df_display = pd.DataFrame(filtered_recipes)[["title", "folder", "created_at"]]
+            df_display.columns = ["料理名", "カテゴリ", "登録日"]
+            
+            st.write("▼ レシピを選択して詳細を表示")
+            
+            # dataframeのselection機能を使用
+            event = st.dataframe(
+                df_display,
+                use_container_width=True,
+                hide_index=True,
+                selection_mode="single-row",
+                on_select="rerun"
+            )
+
+            # 選択された行がある場合、詳細を表示
+            if event.selection.rows:
+                selected_index = event.selection.rows[0]
+                recipe = filtered_recipes[selected_index]
+
+                st.markdown("---")
+                st.subheader(f"🍳 {recipe['title']}")
+                st.caption(f"カテゴリ: {recipe['folder']} | 登録日: {recipe.get('created_at', '-')}")
+
+                col1, col2 = st.columns([1, 1.2])
                 
                 with col1:
-                    st.subheader("🥕 食材")
+                    st.markdown("### 🥕 食材")
                     st.text(recipe['ingredients'])
-                    st.subheader("🧂 調味料")
+                    st.markdown("### 🧂 調味料")
                     st.text(recipe['seasonings'])
                 
                 with col2:
-                    st.subheader("🔥 作り方")
-                    st.text(recipe['steps'])
+                    st.markdown("### 🔥 作り方")
+                    # 作り方をデータフレームとして表示（編集不可）
+                    if isinstance(recipe['steps'], list):
+                        steps_df = pd.DataFrame(recipe['steps'])
+                        # インデックスを1から開始するように表示調整
+                        steps_df.index = steps_df.index + 1
+                        st.dataframe(steps_df, use_container_width=True)
+                    else:
+                        st.text(recipe['steps'])
 
                 st.markdown("---")
                 
-                # --- 試行錯誤ログセクション ---
+                # --- 試行錯誤ログ ---
                 st.subheader("📝 試行錯誤・気づきの記録 (PDCA)")
                 
                 with st.form(key=f"log_form_{recipe['id']}"):
-                    col_log, col_btn = st.columns([3, 1])
+                    col_log, col_btn = st.columns([4, 1])
                     with col_log:
-                        new_log = st.text_input("今回の気づきを入力 (例: 塩少なめでOK, 焼き時間+1分)", key=f"input_{recipe['id']}")
+                        new_log = st.text_input("気づき・メモを追加", placeholder="例: 次は塩を少し減らす", key=f"input_{recipe['id']}")
                     with col_btn:
-                        submit_log = st.form_submit_button("記録を追加")
+                        submit_log = st.form_submit_button("記録")
                     
                     if submit_log and new_log:
                         manager.add_log(recipe['id'], new_log)
-                        st.success("記録を保存しました！")
+                        st.success("記録しました")
                         st.rerun()
 
-                # 過去のログ表示
                 if recipe['logs']:
-                    st.write("▼ 過去の記録")
                     for log in recipe['logs']:
                         st.markdown(f"""
                         <div class="log-box">
-                            <small>{log['date']}</small><br>
-                            {log['text']}
+                            <small>{log['date']}</small> : {log['text']}
                         </div>
                         """, unsafe_allow_html=True)
-                else:
-                    st.caption("まだ記録はありません。")
-
+                
                 # 削除ボタン
-                if st.button("🗑️ このレシピを削除", key=f"del_{recipe['id']}"):
-                    manager.delete_recipe(recipe['id'])
-                    st.rerun()
+                with st.expander("設定・削除"):
+                    if st.button("このレシピを削除する", key=f"del_{recipe['id']}"):
+                        manager.delete_recipe(recipe['id'])
+                        st.rerun()
 
     # ---------------------------------------------------------
-    # 2. 新しいレシピを登録
+    # 2. 新規レシピ登録
     # ---------------------------------------------------------
-    elif menu == "新しいレシピを登録":
+    elif menu == "新規レシピ登録":
         st.header("✍️ 新規レシピ登録")
         
         with st.form("add_recipe_form"):
@@ -215,22 +284,39 @@ def main():
             with col_basic1:
                 title = st.text_input("料理名 (必須)")
             with col_basic2:
-                folder = st.selectbox("フォルダ", manager.data["folders"])
+                folder = st.selectbox("カテゴリ", manager.data["folders"])
 
             col1, col2 = st.columns(2)
             with col1:
-                ingredients = st.text_area("食材リスト", height=150, placeholder="例：\n豚バラ肉 200g\nキャベツ 1/4個")
+                ingredients = st.text_area("食材リスト", height=150, placeholder="・豚バラ肉 200g\n・玉ねぎ 1個")
             with col2:
-                seasonings = st.text_area("調味料リスト", height=150, placeholder="例：\n醤油 大さじ1\nみりん 大さじ1")
+                seasonings = st.text_area("調味料リスト", height=150, placeholder="・醤油 大さじ1\n・みりん 大さじ1")
             
-            steps = st.text_area("作り方", height=200, placeholder="手順を記述してください")
+            st.markdown("### 作り方")
+            st.caption("下に行を追加して手順を入力してください。番号は自動で管理されます。")
+            
+            # 初期データ（空の1行目）
+            default_steps = pd.DataFrame([{"手順": ""}])
+            
+            # 作り方入力用のデータエディタ（行追加可能）
+            edited_steps = st.data_editor(
+                default_steps,
+                num_rows="dynamic",  # 行の追加・削除を許可
+                use_container_width=True,
+                key="editor_steps"
+            )
             
             submitted = st.form_submit_button("レシピを保存する")
             
             if submitted:
                 if title:
-                    manager.add_recipe(title, folder, ingredients, seasonings, steps)
-                    st.success(f"「{title}」を保存しました！")
+                    # 空行を除去して保存
+                    clean_steps = edited_steps[edited_steps["手順"].str.strip() != ""]
+                    if clean_steps.empty:
+                         st.error("作り方を1つ以上入力してください。")
+                    else:
+                        manager.add_recipe(title, folder, ingredients, seasonings, clean_steps)
+                        st.success(f"「{title}」を保存しました！")
                 else:
                     st.error("料理名は必須です。")
 
@@ -238,13 +324,14 @@ def main():
     # 3. フォルダ管理
     # ---------------------------------------------------------
     elif menu == "フォルダ管理":
-        st.header("📂 フォルダ(カテゴリ)の管理")
+        st.header("📂 カテゴリフォルダ管理")
         
-        st.write("現在のフォルダ一覧:")
-        st.write(manager.data["folders"])
+        # 既存フォルダを表で表示
+        df_folders = pd.DataFrame(manager.data["folders"], columns=["フォルダ名"])
+        st.dataframe(df_folders, hide_index=True)
         
         with st.form("add_folder_form"):
-            new_folder_name = st.text_input("新しいフォルダ名")
+            new_folder_name = st.text_input("新しいフォルダ名を追加")
             submitted = st.form_submit_button("追加")
             
             if submitted:
