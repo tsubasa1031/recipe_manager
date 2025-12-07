@@ -32,7 +32,7 @@ class RecipeManager:
                     # データのマイグレーション（古い形式のデータを新しい形式に変換）
                     self._migrate_data(data)
                     
-                    # ★カテゴリの自動更新（新しいカテゴリ定義に含まれていて、ファイルにないものを追加）
+                    # ★カテゴリの自動更新
                     current_folders = data.get("folders", [])
                     for folder in DEFAULT_FOLDERS:
                         if folder not in current_folders:
@@ -56,6 +56,17 @@ class RecipeManager:
             if isinstance(recipe.get("steps"), str):
                 lines = recipe["steps"].split('\n')
                 recipe["steps"] = [{"手順": line.strip()} for line in lines if line.strip()]
+            
+            # 食材リストの移行 (文字列 -> リスト[辞書])
+            if isinstance(recipe.get("ingredients"), str):
+                lines = recipe.get("ingredients", "").split('\n')
+                # 旧データは分量が不明なので空文字にする
+                recipe["ingredients"] = [{"食材": line.strip(), "分量": ""} for line in lines if line.strip()]
+
+            # 調味料リストの移行 (文字列 -> リスト[辞書])
+            if isinstance(recipe.get("seasonings"), str):
+                lines = recipe.get("seasonings", "").split('\n')
+                recipe["seasonings"] = [{"調味料": line.strip(), "分量": ""} for line in lines if line.strip()]
 
     def save_data(self):
         # 1. ローカル保存
@@ -106,14 +117,18 @@ class RecipeManager:
             return True
         return False
 
-    def add_recipe(self, title, folder, ingredients, seasonings, steps_df):
+    def add_recipe(self, title, folder, ingredients_df, seasonings_df, steps_df):
+        # データフレームを辞書リストに変換
         steps_list = steps_df.to_dict('records')
+        ingredients_list = ingredients_df.to_dict('records')
+        seasonings_list = seasonings_df.to_dict('records')
+
         new_recipe = {
             "id": str(uuid.uuid4()),
             "title": title,
             "folder": folder,
-            "ingredients": ingredients,
-            "seasonings": seasonings,
+            "ingredients": ingredients_list,
+            "seasonings": seasonings_list,
             "steps": steps_list,
             "created_at": datetime.now().strftime("%Y-%m-%d"),
             "logs": []
@@ -150,7 +165,7 @@ def main():
         margin-bottom: 8px;
         border-left: 5px solid #ff6b6b;
     }
-    .stDataFrame { margin-top: 10px; }
+    .stDataFrame { margin-top: 5px; margin-bottom: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -184,7 +199,16 @@ def main():
             if search_query:
                 query = search_query.lower()
                 in_title = query in r["title"].lower()
-                in_ingredients = query in r["ingredients"].lower()
+                
+                # 食材リストから文字列を抽出して検索
+                ing_data = r.get("ingredients", [])
+                ing_text = ""
+                if isinstance(ing_data, list):
+                    ing_text = " ".join([str(item.get("食材", "")) for item in ing_data])
+                else:
+                    ing_text = str(ing_data)
+                
+                in_ingredients = query in ing_text.lower()
                 is_word_match = in_title or in_ingredients
             
             if is_folder_match and is_word_match:
@@ -219,18 +243,25 @@ def main():
                 
                 with col1:
                     st.markdown("### 🥕 食材")
-                    st.text(recipe['ingredients'])
+                    if isinstance(recipe.get('ingredients'), list):
+                        st.dataframe(pd.DataFrame(recipe['ingredients']), use_container_width=True, hide_index=True)
+                    else:
+                        st.text(recipe.get('ingredients', ''))
+                        
                     st.markdown("### 🧂 調味料")
-                    st.text(recipe['seasonings'])
+                    if isinstance(recipe.get('seasonings'), list):
+                        st.dataframe(pd.DataFrame(recipe['seasonings']), use_container_width=True, hide_index=True)
+                    else:
+                        st.text(recipe.get('seasonings', ''))
                 
                 with col2:
                     st.markdown("### 🔥 作り方")
-                    if isinstance(recipe['steps'], list):
+                    if isinstance(recipe.get('steps'), list):
                         steps_df = pd.DataFrame(recipe['steps'])
                         steps_df.index = steps_df.index + 1
                         st.dataframe(steps_df, use_container_width=True)
                     else:
-                        st.text(recipe['steps'])
+                        st.text(recipe.get('steps', ''))
 
                 st.markdown("---")
                 st.subheader("📝 試行錯誤・気づきの記録 (PDCA)")
@@ -274,12 +305,30 @@ def main():
                 folder = st.selectbox("カテゴリ", manager.data["folders"])
 
             col1, col2 = st.columns(2)
-            with col1:
-                ingredients = st.text_area("食材リスト", height=150, placeholder="・豚バラ肉 200g\n・玉ねぎ 1個")
-            with col2:
-                seasonings = st.text_area("調味料リスト", height=150, placeholder="・醤油 大さじ1\n・みりん 大さじ1")
             
-            st.markdown("### 作り方")
+            # --- 食材入力 ---
+            with col1:
+                st.markdown("### 🥕 食材リスト")
+                default_ingredients = pd.DataFrame([{"食材": "", "分量": ""}])
+                edited_ingredients = st.data_editor(
+                    default_ingredients,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="editor_ingredients"
+                )
+
+            # --- 調味料入力 ---
+            with col2:
+                st.markdown("### 🧂 調味料リスト")
+                default_seasonings = pd.DataFrame([{"調味料": "", "分量": ""}])
+                edited_seasonings = st.data_editor(
+                    default_seasonings,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="editor_seasonings"
+                )
+            
+            st.markdown("### 🔥 作り方")
             st.caption("下に行を追加して手順を入力してください。")
             
             default_steps = pd.DataFrame([{"手順": ""}])
@@ -295,11 +344,15 @@ def main():
             
             if submitted:
                 if title:
+                    # 空行の除去処理
+                    clean_ingredients = edited_ingredients[edited_ingredients["食材"].str.strip() != ""]
+                    clean_seasonings = edited_seasonings[edited_seasonings["調味料"].str.strip() != ""]
                     clean_steps = edited_steps[edited_steps["手順"].str.strip() != ""]
+                    
                     if clean_steps.empty:
                          st.error("作り方を1つ以上入力してください。")
                     else:
-                        manager.add_recipe(title, folder, ingredients, seasonings, clean_steps)
+                        manager.add_recipe(title, folder, clean_ingredients, clean_seasonings, clean_steps)
                         st.success(f"「{title}」を保存しました！")
                 else:
                     st.error("料理名は必須です。")
