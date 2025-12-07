@@ -9,6 +9,13 @@ from github import Github, GithubException
 # --- 設定 ---
 DATA_FILE = 'recipe_data.json'
 
+# --- 今回指定されたカテゴリ一覧 ---
+DEFAULT_FOLDERS = [
+    "未分類",
+    "和食", "洋食", "フレンチ", "イタリアン",
+    "中華料理", "鍋", "アジア"
+]
+
 # --- データ管理クラス ---
 class RecipeManager:
     def __init__(self, filename):
@@ -21,23 +28,24 @@ class RecipeManager:
             try:
                 with open(self.filename, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    
                     # データのマイグレーション（古い形式のデータを新しい形式に変換）
                     self._migrate_data(data)
+                    
+                    # ★カテゴリの自動更新（新しいカテゴリ定義に含まれていて、ファイルにないものを追加）
+                    current_folders = data.get("folders", [])
+                    for folder in DEFAULT_FOLDERS:
+                        if folder not in current_folders:
+                            current_folders.append(folder)
+                    data["folders"] = current_folders
+                    
                     return data
             except json.JSONDecodeError:
                 pass 
 
-        # 初期データ構造
-        # フォルダ区分を細分化
+        # 初期データ構造（ファイルがない場合）
         return {
-            "folders": [
-                "未分類", 
-                "主菜（肉）", "主菜（魚）", "主菜（他）",
-                "副菜・サラダ", "汁物・スープ", 
-                "ご飯もの・丼", "麺類（パスタ等）", 
-                "パン・粉もの", 
-                "スイーツ・お菓子", "おつまみ", "イベント・おもてなし"
-            ],
+            "folders": DEFAULT_FOLDERS,
             "recipes": []
         }
 
@@ -46,9 +54,7 @@ class RecipeManager:
         for recipe in data.get("recipes", []):
             # 作り方が文字列(旧形式)なら、リスト形式(新形式)に変換
             if isinstance(recipe.get("steps"), str):
-                # 改行で分割してリスト化
                 lines = recipe["steps"].split('\n')
-                # データエディタ用の辞書リストに変換
                 recipe["steps"] = [{"手順": line.strip()} for line in lines if line.strip()]
 
     def save_data(self):
@@ -101,9 +107,7 @@ class RecipeManager:
         return False
 
     def add_recipe(self, title, folder, ingredients, seasonings, steps_df):
-        # データフレームを辞書リストに変換して保存
         steps_list = steps_df.to_dict('records')
-        
         new_recipe = {
             "id": str(uuid.uuid4()),
             "title": title,
@@ -116,14 +120,6 @@ class RecipeManager:
         }
         self.data["recipes"].append(new_recipe)
         self.save_data()
-
-    def update_recipe_steps(self, recipe_id, steps_df):
-        for recipe in self.data["recipes"]:
-            if recipe["id"] == recipe_id:
-                recipe["steps"] = steps_df.to_dict('records')
-                self.save_data()
-                return True
-        return False
 
     def add_log(self, recipe_id, log_text):
         for recipe in self.data["recipes"]:
@@ -176,15 +172,14 @@ def main():
             folder_options = ["すべて"] + manager.data["folders"]
             selected_folder = st.selectbox("📂 フォルダ", folder_options)
         with col_search2:
-            # 食材検索（キーワード）
+            # 食材検索
             search_query = st.text_input("🔍 食材・料理名で検索", placeholder="例: 豚肉, カレー")
 
-        # フィルタリングロジック
+        # フィルタリング
         filtered_recipes = []
         for r in manager.data["recipes"]:
-            # フォルダ条件
             is_folder_match = (selected_folder == "すべて") or (r["folder"] == selected_folder)
-            # 検索ワード条件（タイトル または 食材 に含まれるか）
+            
             is_word_match = True
             if search_query:
                 query = search_query.lower()
@@ -195,17 +190,15 @@ def main():
             if is_folder_match and is_word_match:
                 filtered_recipes.append(r)
 
-        # --- 一覧表示（表形式） ---
+        # --- 一覧表示 ---
         if not filtered_recipes:
             st.info("条件に合うレシピが見つかりません。")
         else:
-            # 表示用のDataFrameを作成
             df_display = pd.DataFrame(filtered_recipes)[["title", "folder", "created_at"]]
             df_display.columns = ["料理名", "カテゴリ", "登録日"]
             
             st.write("▼ レシピを選択して詳細を表示")
             
-            # dataframeのselection機能を使用
             event = st.dataframe(
                 df_display,
                 use_container_width=True,
@@ -214,7 +207,6 @@ def main():
                 on_select="rerun"
             )
 
-            # 選択された行がある場合、詳細を表示
             if event.selection.rows:
                 selected_index = event.selection.rows[0]
                 recipe = filtered_recipes[selected_index]
@@ -233,18 +225,14 @@ def main():
                 
                 with col2:
                     st.markdown("### 🔥 作り方")
-                    # 作り方をデータフレームとして表示（編集不可）
                     if isinstance(recipe['steps'], list):
                         steps_df = pd.DataFrame(recipe['steps'])
-                        # インデックスを1から開始するように表示調整
                         steps_df.index = steps_df.index + 1
                         st.dataframe(steps_df, use_container_width=True)
                     else:
                         st.text(recipe['steps'])
 
                 st.markdown("---")
-                
-                # --- 試行錯誤ログ ---
                 st.subheader("📝 試行錯誤・気づきの記録 (PDCA)")
                 
                 with st.form(key=f"log_form_{recipe['id']}"):
@@ -267,7 +255,6 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                 
-                # 削除ボタン
                 with st.expander("設定・削除"):
                     if st.button("このレシピを削除する", key=f"del_{recipe['id']}"):
                         manager.delete_recipe(recipe['id'])
@@ -293,15 +280,13 @@ def main():
                 seasonings = st.text_area("調味料リスト", height=150, placeholder="・醤油 大さじ1\n・みりん 大さじ1")
             
             st.markdown("### 作り方")
-            st.caption("下に行を追加して手順を入力してください。番号は自動で管理されます。")
+            st.caption("下に行を追加して手順を入力してください。")
             
-            # 初期データ（空の1行目）
             default_steps = pd.DataFrame([{"手順": ""}])
             
-            # 作り方入力用のデータエディタ（行追加可能）
             edited_steps = st.data_editor(
                 default_steps,
-                num_rows="dynamic",  # 行の追加・削除を許可
+                num_rows="dynamic",
                 use_container_width=True,
                 key="editor_steps"
             )
@@ -310,7 +295,6 @@ def main():
             
             if submitted:
                 if title:
-                    # 空行を除去して保存
                     clean_steps = edited_steps[edited_steps["手順"].str.strip() != ""]
                     if clean_steps.empty:
                          st.error("作り方を1つ以上入力してください。")
@@ -326,7 +310,6 @@ def main():
     elif menu == "フォルダ管理":
         st.header("📂 カテゴリフォルダ管理")
         
-        # 既存フォルダを表で表示
         df_folders = pd.DataFrame(manager.data["folders"], columns=["フォルダ名"])
         st.dataframe(df_folders, hide_index=True)
         
