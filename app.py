@@ -111,7 +111,6 @@ class RecipeManager:
         return False
 
     def add_recipe(self, title, folder, ingredients_df, seasonings_df, steps_df):
-        # データフレームを辞書リストに変換
         steps_list = steps_df.to_dict('records')
         ingredients_list = ingredients_df.to_dict('records')
         seasonings_list = seasonings_df.to_dict('records')
@@ -123,7 +122,6 @@ class RecipeManager:
             "ingredients": ingredients_list,
             "seasonings": seasonings_list,
             "steps": steps_list,
-            # created_at は削除しました
             "logs": []
         }
         self.data["recipes"].append(new_recipe)
@@ -132,7 +130,6 @@ class RecipeManager:
     def add_log(self, recipe_id, log_text):
         for recipe in self.data["recipes"]:
             if recipe["id"] == recipe_id:
-                # ログの日付も不要であればここを修正しますが、ログには日付があった方が便利なので残しています
                 log_entry = {
                     "date": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
                     "text": log_text
@@ -165,6 +162,10 @@ def main():
 
     st.title("🍳 My Cooking Lab (料理研究ノート)")
     
+    # フォームのリセット用IDを管理
+    if "form_reset_id" not in st.session_state:
+        st.session_state.form_reset_id = 0
+
     manager = RecipeManager(DATA_FILE)
     menu = st.sidebar.radio("メニュー", ["レシピ一覧・検索", "新規レシピ登録", "フォルダ管理"])
 
@@ -229,7 +230,6 @@ def main():
 
                 st.markdown("---")
                 st.subheader(f"🍳 {recipe['title']}")
-                # 登録日表示を削除
                 st.caption(f"カテゴリ: {recipe['folder']}")
 
                 col1, col2 = st.columns([1, 1.2])
@@ -289,8 +289,27 @@ def main():
     # ---------------------------------------------------------
     elif menu == "新規レシピ登録":
         st.header("✍️ 新規レシピ登録")
+
+        # フォームリセット用のキー生成
+        form_key = st.session_state.form_reset_id
         
-        with st.form("add_recipe_form"):
+        # --- 入力用DataFrameの初期化（Session Stateで固定）---
+        # これにより、入力中にアプリがリランされてもデータフレームが再生成されず、
+        # IME入力が中断されるのを防ぎます。
+        
+        # 食材
+        if f"ing_df_{form_key}" not in st.session_state:
+            st.session_state[f"ing_df_{form_key}"] = pd.DataFrame([{"食材": "", "分量": ""}], columns=["食材", "分量"])
+        
+        # 調味料
+        if f"sea_df_{form_key}" not in st.session_state:
+            st.session_state[f"sea_df_{form_key}"] = pd.DataFrame([{"調味料": "", "分量": ""}], columns=["調味料", "分量"])
+            
+        # 作り方
+        if f"stp_df_{form_key}" not in st.session_state:
+            st.session_state[f"stp_df_{form_key}"] = pd.DataFrame([{"手順": ""}])
+
+        with st.form(key=f"add_recipe_form_{form_key}"):
             col_basic1, col_basic2 = st.columns([2, 1])
             with col_basic1:
                 title = st.text_input("料理名 (必須)")
@@ -303,12 +322,12 @@ def main():
             with col1:
                 st.markdown("### 🥕 食材リスト")
                 st.caption("※入力後はTabキーで分量へ移動")
-                default_ingredients = pd.DataFrame([{"食材": "", "分量": ""}], columns=["食材", "分量"])
+                # session_stateのデータを渡すことでオブジェクトIDを固定
                 edited_ingredients = st.data_editor(
-                    default_ingredients,
+                    st.session_state[f"ing_df_{form_key}"],
                     num_rows="dynamic",
                     use_container_width=True,
-                    key="editor_ingredients",
+                    key=f"editor_ingredients_{form_key}",
                     column_config={
                         "食材": st.column_config.TextColumn("食材", width="medium", required=True),
                         "分量": st.column_config.TextColumn("分量", width="small")
@@ -319,12 +338,11 @@ def main():
             with col2:
                 st.markdown("### 🧂 調味料リスト")
                 st.caption("※入力後はTabキーで分量へ移動")
-                default_seasonings = pd.DataFrame([{"調味料": "", "分量": ""}], columns=["調味料", "分量"])
                 edited_seasonings = st.data_editor(
-                    default_seasonings,
+                    st.session_state[f"sea_df_{form_key}"],
                     num_rows="dynamic",
                     use_container_width=True,
-                    key="editor_seasonings",
+                    key=f"editor_seasonings_{form_key}",
                     column_config={
                         "調味料": st.column_config.TextColumn("調味料", width="medium", required=True),
                         "分量": st.column_config.TextColumn("分量", width="small")
@@ -334,13 +352,11 @@ def main():
             st.markdown("### 🔥 作り方")
             st.caption("下に行を追加して手順を入力してください。")
             
-            default_steps = pd.DataFrame([{"手順": ""}])
-            
             edited_steps = st.data_editor(
-                default_steps,
+                st.session_state[f"stp_df_{form_key}"],
                 num_rows="dynamic",
                 use_container_width=True,
-                key="editor_steps"
+                key=f"editor_steps_{form_key}"
             )
             
             submitted = st.form_submit_button("レシピを保存する")
@@ -348,18 +364,12 @@ def main():
             if submitted:
                 if title:
                     # --- データクリーニング処理 ---
-                    # 1. null(NaN)を除外
-                    # 2. 空文字("")を除外
-                    
-                    # 食材
                     clean_ingredients = edited_ingredients[
                         edited_ingredients["食材"].notna() & (edited_ingredients["食材"] != "")
                     ]
-                    # 調味料
                     clean_seasonings = edited_seasonings[
                         edited_seasonings["調味料"].notna() & (edited_seasonings["調味料"] != "")
                     ]
-                    # 手順
                     clean_steps = edited_steps[
                         edited_steps["手順"].notna() & (edited_steps["手順"] != "")
                     ]
@@ -369,6 +379,10 @@ def main():
                     else:
                         manager.add_recipe(title, folder, clean_ingredients, clean_seasonings, clean_steps)
                         st.success(f"「{title}」を保存しました！")
+                        
+                        # フォームをリセットするためにIDを更新してリラン
+                        st.session_state.form_reset_id += 1
+                        st.rerun()
                 else:
                     st.error("料理名は必須です。")
 
