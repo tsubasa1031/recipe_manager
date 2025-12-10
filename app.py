@@ -67,7 +67,6 @@ class RecipeManager:
                 lines = recipe.get("seasonings", "").split('\n')
                 recipe["seasonings"] = [{"調味料": line.strip(), "分量": ""} for line in lines if line.strip()]
             
-            # ★評価(rating)フィールドの追加（未設定なら0）
             if "rating" not in recipe:
                 recipe["rating"] = 0
 
@@ -132,14 +131,39 @@ class RecipeManager:
             "ingredients": ingredients_list,
             "seasonings": seasonings_list,
             "steps": steps_list,
-            "rating": rating,  # 評価を保存
+            "rating": rating,
             "logs": []
         }
         self.data["recipes"].append(new_recipe)
         self.save_data()
+
+    def update_recipe(self, recipe_id, title, folder, ingredients_df, seasonings_df, steps_df, rating):
+        """レシピ情報を更新する"""
+        steps_list = steps_df.to_dict('records')
+        ingredients_list = ingredients_df.to_dict('records')
+        seasonings_list = seasonings_df.to_dict('records')
+
+        for i, recipe in enumerate(self.data["recipes"]):
+            if recipe["id"] == recipe_id:
+                # 既存のログは保持する
+                logs = recipe.get("logs", [])
+                
+                updated_recipe = {
+                    "id": recipe_id,
+                    "title": title,
+                    "folder": folder,
+                    "ingredients": ingredients_list,
+                    "seasonings": seasonings_list,
+                    "steps": steps_list,
+                    "rating": rating,
+                    "logs": logs
+                }
+                self.data["recipes"][i] = updated_recipe
+                self.save_data()
+                return True
+        return False
     
     def update_rating(self, recipe_id, rating):
-        """評価を更新する"""
         for recipe in self.data["recipes"]:
             if recipe["id"] == recipe_id:
                 recipe["rating"] = rating
@@ -182,9 +206,24 @@ def main():
 
     st.title("🍳 My Cooking Lab (料理研究ノート)")
     
-    # フォームのリセット用IDを管理
+    # Session Stateの初期化
     if "form_reset_id" not in st.session_state:
         st.session_state.form_reset_id = 0
+    if "editing_recipe_id" not in st.session_state:
+        st.session_state.editing_recipe_id = None
+        
+    # カラム設定の固定化（IME入力対策）
+    if "cols_config" not in st.session_state:
+        st.session_state.cols_config = {
+            "ingredients": {
+                "食材": st.column_config.TextColumn("食材", width="medium", required=True),
+                "分量": st.column_config.TextColumn("分量", width="small")
+            },
+            "seasonings": {
+                "調味料": st.column_config.TextColumn("調味料", width="medium", required=True),
+                "分量": st.column_config.TextColumn("分量", width="small")
+            }
+        }
 
     manager = RecipeManager(DATA_FILE)
     menu = st.sidebar.radio("メニュー", ["レシピ一覧・検索", "新規レシピ登録", "フォルダ管理"])
@@ -195,7 +234,6 @@ def main():
     if menu == "レシピ一覧・検索":
         st.header("📖 レシピを探す")
 
-        # 検索・ソートエリア
         col_search1, col_search2, col_sort = st.columns([1.5, 2, 1.5])
         with col_search1:
             folder_options = ["すべて"] + manager.data["folders"]
@@ -233,9 +271,9 @@ def main():
 
         # ソート処理
         if sort_order == "登録が新しい順":
-            filtered_recipes.reverse() # recipesは追加順なので反転すれば新しい順
+            filtered_recipes.reverse()
         elif sort_order == "登録が古い順":
-            pass # そのまま
+            pass
         elif sort_order == "評価が高い順":
             filtered_recipes.sort(key=lambda x: x.get("rating", 0), reverse=True)
         elif sort_order == "評価が低い順":
@@ -244,25 +282,20 @@ def main():
         if not filtered_recipes:
             st.info("条件に合うレシピが見つかりません。")
         else:
-            # 表示用データフレーム作成
             display_data = []
             for r in filtered_recipes:
                 display_data.append({
                     "料理名": r["title"],
                     "カテゴリ": r["folder"],
-                    "評価": get_star_display(r.get("rating", 0)),
-                    # ソート用と表示用で分けるため、内部データはrating数値だが、
-                    # ユーザーに見せる表では文字列化する
-                    "rating_num": r.get("rating", 0) # 隠しカラム（必要なら）
+                    "評価": get_star_display(r.get("rating", 0))
                 })
                 
             df_display = pd.DataFrame(display_data)
             
             st.write("▼ レシピを選択して詳細を表示")
             
-            # 評価順などでソート済みのデータフレームを表示
             event = st.dataframe(
-                df_display[["料理名", "カテゴリ", "評価"]], # 隠しカラムは表示しない
+                df_display,
                 use_container_width=True,
                 hide_index=True,
                 selection_mode="single-row",
@@ -271,80 +304,148 @@ def main():
 
             if event.selection.rows:
                 selected_index = event.selection.rows[0]
-                recipe = filtered_recipes[selected_index] # ソート済みのリストから取得
+                recipe = filtered_recipes[selected_index]
 
                 st.markdown("---")
-                
-                # 詳細ヘッダー
-                r_title_col, r_rate_col = st.columns([3, 1])
-                with r_title_col:
-                    st.subheader(f"🍳 {recipe['title']}")
-                    st.caption(f"カテゴリ: {recipe['folder']}")
-                with r_rate_col:
-                    # 評価変更機能
-                    current_rating = recipe.get("rating", 0)
-                    new_rating = st.selectbox(
-                        "評価を変更",
-                        options=[0, 1, 2, 3, 4, 5],
-                        format_func=lambda x: "未評価" if x==0 else "★" * x,
-                        index=current_rating,
-                        key=f"rating_editor_{recipe['id']}"
-                    )
-                    if new_rating != current_rating:
-                        manager.update_rating(recipe['id'], new_rating)
-                        st.rerun()
 
-                col1, col2 = st.columns([1, 1.2])
-                
-                with col1:
-                    st.markdown("### 🥕 食材")
-                    if isinstance(recipe.get('ingredients'), list):
-                        st.dataframe(pd.DataFrame(recipe['ingredients']), use_container_width=True, hide_index=True)
-                    else:
-                        st.text(recipe.get('ingredients', ''))
-                        
-                    st.markdown("### 🧂 調味料")
-                    if isinstance(recipe.get('seasonings'), list):
-                        st.dataframe(pd.DataFrame(recipe['seasonings']), use_container_width=True, hide_index=True)
-                    else:
-                        st.text(recipe.get('seasonings', ''))
-                
-                with col2:
-                    st.markdown("### 🔥 作り方")
-                    if isinstance(recipe.get('steps'), list):
-                        steps_df = pd.DataFrame(recipe['steps'])
-                        steps_df.index = steps_df.index + 1
-                        st.dataframe(steps_df, use_container_width=True)
-                    else:
-                        st.text(recipe.get('steps', ''))
-
-                st.markdown("---")
-                st.subheader("📝 試行錯誤・気づきの記録 (PDCA)")
-                
-                with st.form(key=f"log_form_{recipe['id']}"):
-                    col_log, col_btn = st.columns([4, 1])
-                    with col_log:
-                        new_log = st.text_input("気づき・メモを追加", placeholder="例: 次は塩を少し減らす", key=f"input_{recipe['id']}")
-                    with col_btn:
-                        submit_log = st.form_submit_button("記録")
+                # --- 編集モードかどうかで表示を切り替え ---
+                if st.session_state.editing_recipe_id == recipe['id']:
+                    st.subheader("✏️ レシピを編集")
                     
-                    if submit_log and new_log:
-                        manager.add_log(recipe['id'], new_log)
-                        st.success("記録しました")
+                    with st.form(key=f"edit_form_{recipe['id']}"):
+                        # 既存データをDataFrameに変換
+                        df_ing = pd.DataFrame(recipe['ingredients']) if recipe['ingredients'] else pd.DataFrame([{"食材": "", "分量": ""}])
+                        df_sea = pd.DataFrame(recipe['seasonings']) if recipe['seasonings'] else pd.DataFrame([{"調味料": "", "分量": ""}])
+                        df_stp = pd.DataFrame(recipe['steps']) if recipe['steps'] else pd.DataFrame([{"手順": ""}])
+
+                        ec1, ec2, ec3 = st.columns([2, 1, 1])
+                        with ec1:
+                            e_title = st.text_input("料理名", value=recipe['title'])
+                        with ec2:
+                            e_folder = st.selectbox("カテゴリ", manager.data["folders"], index=manager.data["folders"].index(recipe['folder']) if recipe['folder'] in manager.data["folders"] else 0)
+                        with ec3:
+                            e_rating = st.selectbox("評価", [0,1,2,3,4,5], index=recipe.get('rating', 0), format_func=lambda x: "未評価" if x==0 else "★"*x)
+
+                        ec_l, ec_r = st.columns(2)
+                        with ec_l:
+                            st.markdown("### 🥕 食材")
+                            e_ingredients = st.data_editor(
+                                df_ing, 
+                                num_rows="dynamic", 
+                                use_container_width=True,
+                                column_config=st.session_state.cols_config["ingredients"],
+                                key=f"edit_ing_{recipe['id']}"
+                            )
+                        with ec_r:
+                            st.markdown("### 🧂 調味料")
+                            e_seasonings = st.data_editor(
+                                df_sea, 
+                                num_rows="dynamic", 
+                                use_container_width=True,
+                                column_config=st.session_state.cols_config["seasonings"],
+                                key=f"edit_sea_{recipe['id']}"
+                            )
+
+                        st.markdown("### 🔥 作り方")
+                        e_steps = st.data_editor(
+                            df_stp, 
+                            num_rows="dynamic", 
+                            use_container_width=True,
+                            key=f"edit_stp_{recipe['id']}"
+                        )
+
+                        col_submit, col_cancel = st.columns([1, 1])
+                        with col_submit:
+                            submit_update = st.form_submit_button("変更を保存", type="primary")
+                        with col_cancel:
+                            cancel_update = st.form_submit_button("キャンセル")
+
+                        if submit_update:
+                            if e_title:
+                                # クリーニング
+                                c_ing = e_ingredients[e_ingredients["食材"].notna() & (e_ingredients["食材"] != "")]
+                                c_sea = e_seasonings[e_seasonings["調味料"].notna() & (e_seasonings["調味料"] != "")]
+                                c_stp = e_steps[e_steps["手順"].notna() & (e_steps["手順"] != "")]
+                                
+                                manager.update_recipe(recipe['id'], e_title, e_folder, c_ing, c_sea, c_stp, e_rating)
+                                st.success("レシピを更新しました！")
+                                st.session_state.editing_recipe_id = None
+                                st.rerun()
+                            else:
+                                st.error("料理名は必須です")
+                        
+                        if cancel_update:
+                            st.session_state.editing_recipe_id = None
+                            st.rerun()
+
+                else:
+                    # --- 通常表示モード ---
+                    # ヘッダー + 編集ボタン
+                    r_title_col, r_rate_col = st.columns([3, 1])
+                    with r_title_col:
+                        st.subheader(f"🍳 {recipe['title']}")
+                        st.caption(f"カテゴリ: {recipe['folder']}")
+                    with r_rate_col:
+                        # 簡易評価変更
+                        current_rating = recipe.get("rating", 0)
+                        st.markdown(f"**評価:** {get_star_display(current_rating)}")
+
+                    # 編集ボタンを配置
+                    if st.button("✏️ レシピを編集する", key=f"btn_edit_{recipe['id']}"):
+                        st.session_state.editing_recipe_id = recipe['id']
                         st.rerun()
 
-                if recipe['logs']:
-                    for log in recipe['logs']:
-                        st.markdown(f"""
-                        <div class="log-box">
-                            <small>{log['date']}</small> : {log['text']}
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                with st.expander("設定・削除"):
-                    if st.button("このレシピを削除する", key=f"del_{recipe['id']}"):
-                        manager.delete_recipe(recipe['id'])
-                        st.rerun()
+                    col1, col2 = st.columns([1, 1.2])
+                    
+                    with col1:
+                        st.markdown("### 🥕 食材")
+                        if isinstance(recipe.get('ingredients'), list):
+                            st.dataframe(pd.DataFrame(recipe['ingredients']), use_container_width=True, hide_index=True)
+                        else:
+                            st.text(recipe.get('ingredients', ''))
+                            
+                        st.markdown("### 🧂 調味料")
+                        if isinstance(recipe.get('seasonings'), list):
+                            st.dataframe(pd.DataFrame(recipe['seasonings']), use_container_width=True, hide_index=True)
+                        else:
+                            st.text(recipe.get('seasonings', ''))
+                    
+                    with col2:
+                        st.markdown("### 🔥 作り方")
+                        if isinstance(recipe.get('steps'), list):
+                            steps_df = pd.DataFrame(recipe['steps'])
+                            steps_df.index = steps_df.index + 1
+                            st.dataframe(steps_df, use_container_width=True)
+                        else:
+                            st.text(recipe.get('steps', ''))
+
+                    st.markdown("---")
+                    st.subheader("📝 試行錯誤・気づきの記録 (PDCA)")
+                    
+                    with st.form(key=f"log_form_{recipe['id']}"):
+                        col_log, col_btn = st.columns([4, 1])
+                        with col_log:
+                            new_log = st.text_input("気づき・メモを追加", placeholder="例: 次は塩を少し減らす", key=f"input_{recipe['id']}")
+                        with col_btn:
+                            submit_log = st.form_submit_button("記録")
+                        
+                        if submit_log and new_log:
+                            manager.add_log(recipe['id'], new_log)
+                            st.success("記録しました")
+                            st.rerun()
+
+                    if recipe['logs']:
+                        for log in recipe['logs']:
+                            st.markdown(f"""
+                            <div class="log-box">
+                                <small>{log['date']}</small> : {log['text']}
+                            </div>
+                            """, unsafe_allow_html=True)
+                    
+                    with st.expander("設定・削除"):
+                        if st.button("このレシピを削除する", key=f"del_{recipe['id']}"):
+                            manager.delete_recipe(recipe['id'])
+                            st.rerun()
 
     # ---------------------------------------------------------
     # 2. 新規レシピ登録
@@ -354,19 +455,6 @@ def main():
 
         form_key = st.session_state.form_reset_id
         
-        # 設定オブジェクトの固定化
-        if "cols_config" not in st.session_state:
-            st.session_state.cols_config = {
-                "ingredients": {
-                    "食材": st.column_config.TextColumn("食材", width="medium", required=True),
-                    "分量": st.column_config.TextColumn("分量", width="small")
-                },
-                "seasonings": {
-                    "調味料": st.column_config.TextColumn("調味料", width="medium", required=True),
-                    "分量": st.column_config.TextColumn("分量", width="small")
-                }
-            }
-
         # 入力用DataFrameの初期化
         if f"ing_df_{form_key}" not in st.session_state:
             st.session_state[f"ing_df_{form_key}"] = pd.DataFrame([{"食材": "", "分量": ""}], columns=["食材", "分量"])
@@ -384,7 +472,6 @@ def main():
             with col_basic2:
                 folder = st.selectbox("カテゴリ", manager.data["folders"])
             with col_basic3:
-                # 評価入力
                 rating = st.selectbox(
                     "評価", 
                     options=[0, 1, 2, 3, 4, 5],
