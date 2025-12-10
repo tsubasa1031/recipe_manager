@@ -15,6 +15,12 @@ DEFAULT_FOLDERS = [
     "中華料理", "鍋", "アジア"
 ]
 
+# --- ヘルパー関数: 星の表示 ---
+def get_star_display(rating):
+    if not rating or rating == 0:
+        return "ー"  # 未評価
+    return "★" * int(rating) + "☆" * (5 - int(rating))
+
 # --- データ管理クラス ---
 class RecipeManager:
     def __init__(self, filename):
@@ -60,6 +66,10 @@ class RecipeManager:
             if isinstance(recipe.get("seasonings"), str):
                 lines = recipe.get("seasonings", "").split('\n')
                 recipe["seasonings"] = [{"調味料": line.strip(), "分量": ""} for line in lines if line.strip()]
+            
+            # ★評価(rating)フィールドの追加（未設定なら0）
+            if "rating" not in recipe:
+                recipe["rating"] = 0
 
     def save_data(self):
         # 1. ローカル保存
@@ -110,7 +120,7 @@ class RecipeManager:
             return True
         return False
 
-    def add_recipe(self, title, folder, ingredients_df, seasonings_df, steps_df):
+    def add_recipe(self, title, folder, ingredients_df, seasonings_df, steps_df, rating):
         steps_list = steps_df.to_dict('records')
         ingredients_list = ingredients_df.to_dict('records')
         seasonings_list = seasonings_df.to_dict('records')
@@ -122,10 +132,20 @@ class RecipeManager:
             "ingredients": ingredients_list,
             "seasonings": seasonings_list,
             "steps": steps_list,
+            "rating": rating,  # 評価を保存
             "logs": []
         }
         self.data["recipes"].append(new_recipe)
         self.save_data()
+    
+    def update_rating(self, recipe_id, rating):
+        """評価を更新する"""
+        for recipe in self.data["recipes"]:
+            if recipe["id"] == recipe_id:
+                recipe["rating"] = rating
+                self.save_data()
+                return True
+        return False
 
     def add_log(self, recipe_id, log_text):
         for recipe in self.data["recipes"]:
@@ -175,13 +195,20 @@ def main():
     if menu == "レシピ一覧・検索":
         st.header("📖 レシピを探す")
 
-        col_search1, col_search2 = st.columns([1, 2])
+        # 検索・ソートエリア
+        col_search1, col_search2, col_sort = st.columns([1.5, 2, 1.5])
         with col_search1:
             folder_options = ["すべて"] + manager.data["folders"]
             selected_folder = st.selectbox("📂 フォルダ", folder_options)
         with col_search2:
             search_query = st.text_input("🔍 食材・料理名で検索", placeholder="例: 豚肉, カレー")
+        with col_sort:
+            sort_order = st.selectbox(
+                "🔃 並び替え", 
+                ["登録が新しい順", "評価が高い順", "評価が低い順", "登録が古い順"]
+            )
 
+        # フィルタリング
         filtered_recipes = []
         for r in manager.data["recipes"]:
             is_folder_match = (selected_folder == "すべて") or (r["folder"] == selected_folder)
@@ -204,20 +231,38 @@ def main():
             if is_folder_match and is_word_match:
                 filtered_recipes.append(r)
 
+        # ソート処理
+        if sort_order == "登録が新しい順":
+            filtered_recipes.reverse() # recipesは追加順なので反転すれば新しい順
+        elif sort_order == "登録が古い順":
+            pass # そのまま
+        elif sort_order == "評価が高い順":
+            filtered_recipes.sort(key=lambda x: x.get("rating", 0), reverse=True)
+        elif sort_order == "評価が低い順":
+            filtered_recipes.sort(key=lambda x: x.get("rating", 0))
+
         if not filtered_recipes:
             st.info("条件に合うレシピが見つかりません。")
         else:
-            # 登録日を除外して表示
-            df_display = pd.DataFrame(filtered_recipes)
-            # データが存在する場合のみカラム抽出
-            if not df_display.empty:
-                df_display = df_display[["title", "folder"]]
-                df_display.columns = ["料理名", "カテゴリ"]
+            # 表示用データフレーム作成
+            display_data = []
+            for r in filtered_recipes:
+                display_data.append({
+                    "料理名": r["title"],
+                    "カテゴリ": r["folder"],
+                    "評価": get_star_display(r.get("rating", 0)),
+                    # ソート用と表示用で分けるため、内部データはrating数値だが、
+                    # ユーザーに見せる表では文字列化する
+                    "rating_num": r.get("rating", 0) # 隠しカラム（必要なら）
+                })
+                
+            df_display = pd.DataFrame(display_data)
             
             st.write("▼ レシピを選択して詳細を表示")
             
+            # 評価順などでソート済みのデータフレームを表示
             event = st.dataframe(
-                df_display,
+                df_display[["料理名", "カテゴリ", "評価"]], # 隠しカラムは表示しない
                 use_container_width=True,
                 hide_index=True,
                 selection_mode="single-row",
@@ -226,11 +271,28 @@ def main():
 
             if event.selection.rows:
                 selected_index = event.selection.rows[0]
-                recipe = filtered_recipes[selected_index]
+                recipe = filtered_recipes[selected_index] # ソート済みのリストから取得
 
                 st.markdown("---")
-                st.subheader(f"🍳 {recipe['title']}")
-                st.caption(f"カテゴリ: {recipe['folder']}")
+                
+                # 詳細ヘッダー
+                r_title_col, r_rate_col = st.columns([3, 1])
+                with r_title_col:
+                    st.subheader(f"🍳 {recipe['title']}")
+                    st.caption(f"カテゴリ: {recipe['folder']}")
+                with r_rate_col:
+                    # 評価変更機能
+                    current_rating = recipe.get("rating", 0)
+                    new_rating = st.selectbox(
+                        "評価を変更",
+                        options=[0, 1, 2, 3, 4, 5],
+                        format_func=lambda x: "未評価" if x==0 else "★" * x,
+                        index=current_rating,
+                        key=f"rating_editor_{recipe['id']}"
+                    )
+                    if new_rating != current_rating:
+                        manager.update_rating(recipe['id'], new_rating)
+                        st.rerun()
 
                 col1, col2 = st.columns([1, 1.2])
                 
@@ -290,12 +352,9 @@ def main():
     elif menu == "新規レシピ登録":
         st.header("✍️ 新規レシピ登録")
 
-        # フォームリセット用のキー生成
         form_key = st.session_state.form_reset_id
         
-        # --- 設定オブジェクトの固定化 (再描画防止) ---
-        # column_configを毎回生成するとウィジェットが再マウントされてIME入力が切れるため、
-        # session_stateで一度だけ生成して保持する
+        # 設定オブジェクトの固定化
         if "cols_config" not in st.session_state:
             st.session_state.cols_config = {
                 "ingredients": {
@@ -308,7 +367,7 @@ def main():
                 }
             }
 
-        # --- 入力用DataFrameの初期化 ---
+        # 入力用DataFrameの初期化
         if f"ing_df_{form_key}" not in st.session_state:
             st.session_state[f"ing_df_{form_key}"] = pd.DataFrame([{"食材": "", "分量": ""}], columns=["食材", "分量"])
         
@@ -319,15 +378,21 @@ def main():
             st.session_state[f"stp_df_{form_key}"] = pd.DataFrame([{"手順": ""}])
 
         with st.form(key=f"add_recipe_form_{form_key}"):
-            col_basic1, col_basic2 = st.columns([2, 1])
+            col_basic1, col_basic2, col_basic3 = st.columns([2, 1, 1])
             with col_basic1:
                 title = st.text_input("料理名 (必須)")
             with col_basic2:
                 folder = st.selectbox("カテゴリ", manager.data["folders"])
+            with col_basic3:
+                # 評価入力
+                rating = st.selectbox(
+                    "評価", 
+                    options=[0, 1, 2, 3, 4, 5],
+                    format_func=lambda x: "未評価" if x==0 else "★" * x
+                )
 
             col1, col2 = st.columns(2)
             
-            # --- 食材入力 ---
             with col1:
                 st.markdown("### 🥕 食材リスト")
                 st.caption("※入力後はTabキーで分量へ移動")
@@ -339,7 +404,6 @@ def main():
                     column_config=st.session_state.cols_config["ingredients"]
                 )
 
-            # --- 調味料入力 ---
             with col2:
                 st.markdown("### 🧂 調味料リスト")
                 st.caption("※入力後はTabキーで分量へ移動")
@@ -365,7 +429,6 @@ def main():
             
             if submitted:
                 if title:
-                    # --- データクリーニング処理 ---
                     clean_ingredients = edited_ingredients[
                         edited_ingredients["食材"].notna() & (edited_ingredients["食材"] != "")
                     ]
@@ -379,7 +442,7 @@ def main():
                     if clean_steps.empty:
                          st.error("作り方を1つ以上入力してください。")
                     else:
-                        manager.add_recipe(title, folder, clean_ingredients, clean_seasonings, clean_steps)
+                        manager.add_recipe(title, folder, clean_ingredients, clean_seasonings, clean_steps, rating)
                         st.success(f"「{title}」を保存しました！")
                         st.session_state.form_reset_id += 1
                         st.rerun()
